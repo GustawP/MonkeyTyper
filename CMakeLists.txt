@@ -20,3 +20,8 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/_deps/sfml-src/cmake/Modules" ${CMAKE
 add_executable(MonkeyType main.cpp)
 
 target_link_libraries(MonkeyType sfml-graphics sfml-window sfml-system)
+
+# Copy the fonts next to the executable, so the game finds them when started from the build directory.
+foreach(font mytype.ttf Pixellettersfull-BnJ5.ttf KOMIKABG.ttf)
+    configure_file(${CMAKE_SOURCE_DIR}/${font} ${CMAKE_BINARY_DIR}/${font} COPYONLY)
+endforeach()

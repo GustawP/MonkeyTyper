@@ -9,10 +9,12 @@
 #include <fstream>
 #include <sstream>
 
-auto collision(std::vector<sf::Text> &words, sf::RectangleShape &border, int &points, int &lostPoints) -> void {
+auto collision(std::vector<sf::Text> &words, sf::RectangleShape &border, int &points, int &lostPoints,
+               std::set<int> &usedPositions) -> void {
     for (auto it = words.begin(); it != words.end();) {
         if (it->getGlobalBounds().intersects(border.getGlobalBounds())) {
             lostPoints++;
+            usedPositions.erase(static_cast<int>(it->getPosition().y)); // Free the row for new words
             it = words.erase(it);
         } else {
             ++it;
@@ -63,14 +65,20 @@ int main() {
 
     sf::Font font1, font2, font3;
 
-    std::string fontPath1 = "../mytype.ttf";
-    std::string fontPath2 = "../Pixellettersfull-BnJ5.ttf";
-    std::string fontPath3 = "../KOMIKABG.ttf";
-    std::cout << "Loading font1 from: " << fontPath1 << std::endl;
-    std::cout << "Loading font2 from: " << fontPath2 << std::endl;
-    std::cout << "Loading font3 from: " << fontPath3 << std::endl;
+    // Fonts are looked up next to the working directory first, then one level up,
+    // so the game starts both from the build directory and from the project root.
+    auto loadFont = [](sf::Font &font, const std::string &fileName) -> bool {
+        for (const auto &path: {fileName, "../" + fileName}) {
+            if (std::filesystem::exists(path) && font.loadFromFile(path)) {
+                std::cout << "Loaded font from: " << path << std::endl;
+                return true;
+            }
+        }
+        std::cerr << "Could not find font: " << fileName << std::endl;
+        return false;
+    };
 
-    if (!font1.loadFromFile(fontPath1) || !font2.loadFromFile(fontPath2) || !font3.loadFromFile(fontPath3)) {
+    if (!loadFont(font1, "mytype.ttf") || !loadFont(font2, "Pixellettersfull-BnJ5.ttf") || !loadFont(font3, "KOMIKABG.ttf")) {
         std::cerr << "Error loading fonts" << std::endl;
         return -1;
     }
@@ -149,7 +157,7 @@ int main() {
             if (event.type == sf::Event::KeyPressed) {
                 if (event.key.code == sf::Keyboard::Enter) {
                     try {
-                        fontSize = std::stoi(sizeStr);
+                        fontSize = std::clamp(std::stoi(sizeStr), 10, 72); // Keep words readable and on screen
                         sizeSelected = true;
                         sizeWindow.close();
                     } catch (...) {
@@ -199,7 +207,11 @@ int main() {
     float wordSpeed = initialWordSpeed;
     const int speedIncreaseInterval = 800; // Interval to increase speed (frames)
 
-    std::set<int> usedPositions; // To track used positions and avoid overlap
+    std::set<int> usedPositions; // Rows currently occupied by a word, to avoid overlap
+
+    // Words spawn on fixed rows one line apart, so two words can never overlap vertically.
+    const int rowHeight = static_cast<int>(fontSize) + 8;
+    const int rowCount = std::max(1, static_cast<int>(window.getSize().y - 100) / rowHeight);
 
     while (window.isOpen()) {
         sf::Event event;
@@ -218,19 +230,25 @@ int main() {
 
         frameCounter++;
         if (frameCounter % spawnInterval == 0) {
-            auto index = rand() % library.size();
-            sf::Text newWord(library[index], selectedFont, fontSize);
+            std::vector<int> freeRows;
+            for (auto row = 0; row < rowCount; ++row) {
+                if (usedPositions.find(row * rowHeight) == usedPositions.end()) {
+                    freeRows.push_back(row * rowHeight);
+                }
+            }
 
-            int positionY;
-            do {
-                positionY = rand() % (window.getSize().y - 100); // Ensure full window height is used
-            } while (usedPositions.find(positionY) != usedPositions.end());
+            // If every row is taken, skip this spawn instead of searching forever for a free one.
+            if (!freeRows.empty()) {
+                auto index = rand() % library.size();
+                sf::Text newWord(library[index], selectedFont, fontSize);
 
-            usedPositions.insert(positionY);
+                int positionY = freeRows[rand() % freeRows.size()];
+                usedPositions.insert(positionY);
 
-            newWord.setPosition(0, positionY);
-            newWord.setFillColor(sf::Color::White);
-            currentWords.push_back(newWord);
+                newWord.setPosition(0, static_cast<float>(positionY));
+                newWord.setFillColor(sf::Color::White);
+                currentWords.push_back(newWord);
+            }
 
             // Decrease the spawn interval to make words appear faster over time
             if (spawnInterval > 20) { // Minimum spawn interval
@@ -264,7 +282,7 @@ int main() {
         border.setFillColor(sf::Color::Black);
         border.setPosition(990, 0); // Adjusted for larger window size
 
-        collision(currentWords, border, points, lostPoints);
+        collision(currentWords, border, points, lostPoints, usedPositions);
 
         // Update the score and lost points display
         scoreText.setString("Score: " + std::to_string(points));
@@ -290,12 +308,23 @@ int main() {
             scoreBoardText.setFillColor(sf::Color::White);
             scoreBoardText.setPosition(window.getSize().x / 2 - scoreBoardText.getGlobalBounds().width / 2, window.getSize().y / 2 + 50);
 
-            window.clear(sf::Color::Black);
-            window.draw(gameOverText);
-            window.draw(scoreBoardText);
-            window.display();
-            sf::sleep(sf::seconds(10)); // Delay to show "Game Over" message and scores
+            // Show the results for up to 10 seconds, but keep handling events so the window
+            // stays responsive and can be closed early with any key or the close button.
+            sf::Clock gameOverClock;
+            while (window.isOpen() && gameOverClock.getElapsedTime() < sf::seconds(10)) {
+                sf::Event gameOverEvent;
+                while (window.pollEvent(gameOverEvent)) {
+                    if (gameOverEvent.type == sf::Event::Closed || gameOverEvent.type == sf::Event::KeyPressed) {
+                        window.close();
+                    }
+                }
+                window.clear(sf::Color::Black);
+                window.draw(gameOverText);
+                window.draw(scoreBoardText);
+                window.display();
+            }
             window.close();
+            break;
         }
 
         window.clear(sf::Color::Black);
